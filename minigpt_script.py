@@ -60,11 +60,51 @@ class Head(nn.Module):
         q = self.query(x)
         k = self.query(x)
         wei = q @ k.transpose(-2,-1) * C**-0.5
-        wei = wei.masked_fill(self.tril[:T][:T]==0, float('-inf'))
+        wei = wei.masked_fill(self.tril[:T,:T]==0, float('-inf'))
         wei = F.softmax(wei,dim=-1)
         v = self.value(x)
         out = wei @ v
         return out
+
+# ------ Multi-Head Attention --------
+
+class MultiHeads(nn.Module):
+
+    def __init__(self,num_heads,head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+    def forward(self,x):
+        return torch.cat([h(x) for h in self.heads],dim=-1)
+
+# ------- Feed Forward Network --------
+
+class FFN(nn.Module):
+
+    def __init__(self,n_embed):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embed,n_embed),
+            nn.ReLU(),
+        )
+
+    def forward(self,x):
+        return self.net(x)
+
+# -------- Transformer Block ----------
+
+class Block(nn.Module):
+
+    def __init__(self,num_heads,n_embed):
+        super().__init__()
+        self.head_size = n_embed // num_heads
+        self.heads = MultiHeads(num_heads,self.head_size)
+        self.ffn = FFN(n_embed)
+
+    def forward(self,x):
+        x = self.heads(x)
+        x = self.ffn(x)
+        return x
 
 # -------- Bigram ----------
 
@@ -74,7 +114,11 @@ class Bigram(nn.Module):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size,n_embed) # this gives us token embeddings
         self.position_embedding_table = nn.Embedding(block_size,n_embed)
-        self.sa_head = Head(n_embed) # Attention head
+        self.blocks = nn.Sequential(
+            Block(4,n_embed),
+            Block(4,n_embed),
+            Block(4,n_embed),
+        )
         self.lm_head = nn.Linear(n_embed,vocab_size) # passing token embedding here gives us logits
 
     def forward(self,idx,target=None):
@@ -82,7 +126,7 @@ class Bigram(nn.Module):
         tokn_emb = self.token_embedding_table(idx)
         pos_emb = self.position_embedding_table(torch.arange(T,device=device))
         x = tokn_emb + pos_emb
-        x = self.sa_head(x)
+        x = self.blocks(x)
         logits = self.lm_head(x)
 
         if target is None:
@@ -96,10 +140,10 @@ class Bigram(nn.Module):
 
     def generate(self,idx,max_possible_token):
         for _ in range(max_possible_token):
-            idx_cond = idx[:-block_size:] # crop idx to last block size token
+            idx_cond = idx[:,-block_size:] # crop idx to last block size token
             logits,loss = self(idx_cond)
-            logits = logits[:-1:] # focus only on the last time step
-            probs = F.softmax(logits,dim=1)
+            logits = logits[:,-1,:] # focus only on the last time step
+            probs = F.softmax(logits,dim=-1)
             idx_next = torch.multinomial(probs,num_samples=1)
             idx = torch.cat((idx,idx_next),dim=1)
         return idx
@@ -115,13 +159,16 @@ def train():
     for i in range(max_iter):
         xb,yb = get_batch('train')
         optimizer.zero_grad(set_to_none=True)
-        logits,loss = m.forward(xb,yb)
+        _,loss = m.forward(xb,yb)
         loss.backward()
         optimizer.step()
-        print(loss.item())
+        if i%500==0:
+            xv,yv = get_batch('val')
+            _,val_loss = m(xv,yv)
+            print("Step: ",i, " Training loss: ",loss.item(), " Validation Loss: ",val_loss.item())
     return loss.item()
 
 loss = train()
 
-
+print(decode(m.generate(torch.zeros((1,1),dtype=torch.long),100)[0].tolist()))
 
