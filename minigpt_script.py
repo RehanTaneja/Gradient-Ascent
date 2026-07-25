@@ -73,9 +73,12 @@ class MultiHeads(nn.Module):
     def __init__(self,num_heads,head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embed,n_embed)
 
     def forward(self,x):
-        return torch.cat([h(x) for h in self.heads],dim=-1)
+        out = torch.cat([h(x) for h in self.heads],dim=-1)
+        out = self.proj(out)
+        return out
 
 # ------- Feed Forward Network --------
 
@@ -84,8 +87,9 @@ class FFN(nn.Module):
     def __init__(self,n_embed):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embed,n_embed),
+            nn.Linear(n_embed, 4 * n_embed), # both input and output are the same dimension ie n_embed x n_embed but inner layer has 4x dimensions
             nn.ReLU(),
+            nn.Linear(4 * n_embed,n_embed),
         )
 
     def forward(self,x):
@@ -102,8 +106,8 @@ class Block(nn.Module):
         self.ffn = FFN(n_embed)
 
     def forward(self,x):
-        x = self.heads(x)
-        x = self.ffn(x)
+        x = x + self.heads(x)
+        x = x + self.ffn(x)
         return x
 
 # -------- Bigram ----------
